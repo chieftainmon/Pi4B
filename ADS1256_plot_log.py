@@ -21,14 +21,14 @@ CMD_WREG = 0x50
 CMD_SDATAC = 0x0F
 CMD_SELFCAL = 0xF0
 
-VREF = 5  # Volts (check your board!)
+VREF = 2.5  # Volts (check your board!)
 GAIN = 1    # Set in ADCON register
 
 # Use only three single-ended channels: AIN0, AIN1, AIN2 with AINCOM as negative
 SE_CHANNELS = [0, 1, 2]
 NUM_CH = len(SE_CHANNELS)
 
-LOG_FILENAME = "ads1256_single_ended_log.csv"
+LOG_FILENAME_PREFIX = "ads1256_single_ended_log_"
 
 def wait_drdy():
     while GPIO.input(DRDY):
@@ -80,20 +80,17 @@ def ads1256_init(spi):
     ads1256_write_cmd(spi, CMD_SELFCAL)
     wait_drdy()
 
-def log_data_to_file(voltage_list):
+def prepare_logfile_header(log_filename):
+    with open(log_filename, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp"] + [f"AIN{ch}-AINCOM (V)" for ch in SE_CHANNELS])
+
+def log_data_to_file(log_filename, voltage_list):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILENAME, "a", newline="") as f:
+    with open(log_filename, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([now] + voltage_list)
-    print(f"Logged at {now}: {voltage_list}")
-
-def prepare_logfile_header():
-    try:
-        with open(LOG_FILENAME, "x", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["timestamp"] + [f"AIN{ch}-AINCOM (V)" for ch in SE_CHANNELS])
-    except FileExistsError:
-        pass
+    print(f"Logged at {now}: {voltage_list} to {log_filename}")
 
 def main():
     GPIO.setmode(GPIO.BCM)
@@ -111,7 +108,6 @@ def main():
     spi.mode = 1
 
     ads1256_init(spi)
-    prepare_logfile_header()
 
     plt.ion()
     fig, ax = plt.subplots()
@@ -133,10 +129,15 @@ def main():
     start_button = mwidgets.Button(start_button_ax, 'Start Logging', color='lightgreen', hovercolor='0.975')
     stop_button = mwidgets.Button(stop_button_ax, 'Stop Logging', color='lightcoral', hovercolor='0.975')
     is_logging = [False]
+    log_filename = [None]
 
     def on_start_clicked(event):
         is_logging[0] = True
-        print("Continuous logging started.")
+        # Generate new log file with timestamp
+        file_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename[0] = LOG_FILENAME_PREFIX + file_time + ".csv"
+        prepare_logfile_header(log_filename[0])
+        print(f"Continuous logging started. Logging to {log_filename[0]}")
 
     def on_stop_clicked(event):
         is_logging[0] = False
@@ -164,10 +165,10 @@ def main():
             ax.autoscale_view(True, True, True)
             plt.pause(0.01)
 
-            if is_logging[0]:
+            if is_logging[0] and log_filename[0] is not None:
                 now = time.time()
                 if now - last_log_time > LOG_INTERVAL:
-                    log_data_to_file(voltages)
+                    log_data_to_file(log_filename[0], voltages)
                     last_log_time = now
             else:
                 last_log_time = time.time()  # Reset timer so logging resumes cleanly

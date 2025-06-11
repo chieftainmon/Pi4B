@@ -24,11 +24,11 @@ CMD_SELFCAL = 0xF0
 VREF = 2.5  # Volts (check your board!)
 GAIN = 1    # Set in ADCON register
 
-# Use only three single-ended channels: AIN0, AIN1, AIN2 with AINCOM as negative
-SE_CHANNELS = [0, 1, 2]
-NUM_CH = len(SE_CHANNELS)
+# Full set of differential channels for ADS1256
+DIFF_CHANNELS = [(0, 1), (2, 3), (4, 5), (6, 7)]
+NUM_CH = len(DIFF_CHANNELS)
 
-LOG_FILENAME_PREFIX = "ads1256_single_ended_log_"
+LOG_FILENAME_PREFIX = "ads1256_diff_log_"
 
 def wait_drdy():
     while GPIO.input(DRDY):
@@ -42,9 +42,8 @@ def ads1256_write_reg(spi, reg, value):
     spi.xfer2([CMD_WREG | reg, 0x00, value])
     time.sleep(0.001)
 
-def ads1256_set_single_channel(spi, ain):
-    # Set input multiplexer to channel ain (positive), AINCOM (negative)
-    mux = (ain << 4) | 0x08
+def ads1256_set_diff_channel(spi, ainp, ainm):
+    mux = (ainp << 4) | (ainm & 0x0F)
     ads1256_write_reg(spi, 0x01, mux)
     time.sleep(0.001)
     ads1256_write_cmd(spi, 0xFC)  # SYNC
@@ -74,7 +73,9 @@ def ads1256_init(spi):
     wait_drdy()
     ads1256_write_cmd(spi, CMD_SDATAC)
     ads1256_write_reg(spi, 0x00, 0x01)  # STATUS: Auto-Calibration enabled
-    ads1256_write_reg(spi, 0x01, 0x08)  # MUX: AIN0/AINCOM initially (single-ended)
+    ainp, ainm = DIFF_CHANNELS[0]
+    mux = (ainp << 4) | (ainm & 0x0F)
+    ads1256_write_reg(spi, 0x01, mux)
     ads1256_write_reg(spi, 0x02, 0x00)  # ADCON: Gain=1, Clock out off
     ads1256_write_reg(spi, 0x03, 0xF0)  # DRATE: 30kSPS
     ads1256_write_cmd(spi, CMD_SELFCAL)
@@ -83,7 +84,7 @@ def ads1256_init(spi):
 def prepare_logfile_header(log_filename):
     with open(log_filename, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp"] + [f"AIN{ch}-AINCOM (V)" for ch in SE_CHANNELS])
+        writer.writerow(["timestamp"] + [f"AIN{p}-AIN{n} (V)" for p, n in DIFF_CHANNELS])
 
 def log_data_to_file(log_filename, voltage_list):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -111,8 +112,8 @@ def main():
 
     plt.ion()
     fig, ax = plt.subplots()
-    plt.subplots_adjust(bottom=0.22)
-    lines = [ax.plot([], [], label=f"AIN{ch}-AINCOM")[0] for ch in SE_CHANNELS]
+    plt.subplots_adjust(bottom=0.29)
+    lines = [ax.plot([], [], label=f"AIN{p}-AIN{n}")[0] for p, n in DIFF_CHANNELS]
     ax.legend()
     ax.set_ylim(-VREF, VREF)
     ax.set_xlim(0, 100)
@@ -123,17 +124,20 @@ def main():
     ys = [[0]*100 for _ in range(NUM_CH)]
     voltages = [0.0]*NUM_CH
 
-    # Add Start and Stop logging buttons
-    start_button_ax = plt.axes([0.18, 0.07, 0.23, 0.1])
-    stop_button_ax = plt.axes([0.55, 0.07, 0.23, 0.1])
+    # Add Start, Stop, and Zero Offset buttons
+    start_button_ax = plt.axes([0.11, 0.07, 0.18, 0.1])
+    stop_button_ax = plt.axes([0.32, 0.07, 0.18, 0.1])
+    zero_button_ax = plt.axes([0.53, 0.07, 0.18, 0.1])
     start_button = mwidgets.Button(start_button_ax, 'Start Logging', color='lightgreen', hovercolor='0.975')
     stop_button = mwidgets.Button(stop_button_ax, 'Stop Logging', color='lightcoral', hovercolor='0.975')
+    zero_button = mwidgets.Button(zero_button_ax, 'Zero Offset', color='lightblue', hovercolor='0.975')
+
     is_logging = [False]
     log_filename = [None]
+    offset = [[0.0]*NUM_CH]  # Outer list for mutability in closures
 
     def on_start_clicked(event):
         is_logging[0] = True
-        # Generate new log file with timestamp
         file_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_filename[0] = LOG_FILENAME_PREFIX + file_time + ".csv"
         prepare_logfile_header(log_filename[0])
@@ -143,20 +147,28 @@ def main():
         is_logging[0] = False
         print("Continuous logging stopped.")
 
+    def on_zero_clicked(event):
+        # Set current displayed voltages as the new offset
+        offset[0] = voltages.copy()
+        print(f"Offset set to: {offset[0]} (data will be zeroed to this)")
+
     start_button.on_clicked(on_start_clicked)
     stop_button.on_clicked(on_stop_clicked)
+    zero_button.on_clicked(on_zero_clicked)
 
     LOG_INTERVAL = 0.1  # seconds between file logs when running
     last_log_time = time.time()
 
     try:
         while True:
-            voltages = []
-            for i, ch in enumerate(SE_CHANNELS):
-                ads1256_set_single_channel(spi, ch)
+            voltages.clear()
+            for i, (ainp, ainm) in enumerate(DIFF_CHANNELS):
+                ads1256_set_diff_channel(spi, ainp, ainm)
                 wait_drdy()
                 raw = ads1256_read_data(spi)
                 voltage = raw_to_voltage(raw)
+                # Subtract offset for zeroing
+                voltage -= offset[0][i]
                 voltages.append(voltage)
                 ys[i].append(voltage)
                 ys[i].pop(0)

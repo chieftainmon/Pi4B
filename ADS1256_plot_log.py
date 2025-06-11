@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.widgets as mwidgets
 import csv
 from datetime import datetime
+from collections import deque
 
 # Pin mapping (BCM)
 DRDY = 17
@@ -27,8 +28,10 @@ GAIN = 1    # Set in ADCON register
 # Full set of differential channels for ADS1256
 DIFF_CHANNELS = [(0, 1), (2, 3), (4, 5), (6, 7)]
 NUM_CH = len(DIFF_CHANNELS)
-
 LOG_FILENAME_PREFIX = "ads1256_diff_log_"
+
+# Filtering parameters
+FILTER_WINDOW = 5  # Number of samples for moving average
 
 def wait_drdy():
     while GPIO.input(DRDY):
@@ -88,10 +91,12 @@ def prepare_logfile_header(log_filename):
 
 def log_data_to_file(log_filename, voltage_list):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Reduce to 6 decimal digits
+    voltage_strs = [f"{v:.6f}" for v in voltage_list]
     with open(log_filename, "a", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([now] + voltage_list)
-    print(f"Logged at {now}: {voltage_list} to {log_filename}")
+        writer.writerow([now] + voltage_strs)
+    print(f"Logged at {now}: {voltage_strs} to {log_filename}")
 
 def main():
     GPIO.setmode(GPIO.BCM)
@@ -112,7 +117,7 @@ def main():
 
     plt.ion()
     fig, ax = plt.subplots()
-    plt.subplots_adjust(bottom=0.29)
+    plt.subplots_adjust(bottom=0.36)
     lines = [ax.plot([], [], label=f"AIN{p}-AIN{n}")[0] for p, n in DIFF_CHANNELS]
     ax.legend()
     ax.set_ylim(-VREF, VREF)
@@ -124,13 +129,19 @@ def main():
     ys = [[0]*100 for _ in range(NUM_CH)]
     voltages = [0.0]*NUM_CH
 
-    # Add Start, Stop, and Zero Offset buttons
-    start_button_ax = plt.axes([0.11, 0.07, 0.18, 0.1])
-    stop_button_ax = plt.axes([0.32, 0.07, 0.18, 0.1])
-    zero_button_ax = plt.axes([0.53, 0.07, 0.18, 0.1])
+    # Filtering buffer and state
+    buffers = [deque([0.0]*FILTER_WINDOW, maxlen=FILTER_WINDOW) for _ in range(NUM_CH)]
+    is_filtering = [True]
+
+    # Add Start, Stop, Zero, and Filter Toggle buttons
+    start_button_ax = plt.axes([0.03, 0.07, 0.16, 0.1])
+    stop_button_ax = plt.axes([0.21, 0.07, 0.16, 0.1])
+    zero_button_ax = plt.axes([0.39, 0.07, 0.16, 0.1])
+    filter_button_ax = plt.axes([0.57, 0.07, 0.24, 0.1])
     start_button = mwidgets.Button(start_button_ax, 'Start Logging', color='lightgreen', hovercolor='0.975')
     stop_button = mwidgets.Button(stop_button_ax, 'Stop Logging', color='lightcoral', hovercolor='0.975')
     zero_button = mwidgets.Button(zero_button_ax, 'Zero Offset', color='lightblue', hovercolor='0.975')
+    filter_button = mwidgets.Button(filter_button_ax, 'Toggle Filtering', color='khaki', hovercolor='0.975')
 
     is_logging = [False]
     log_filename = [None]
@@ -148,13 +159,18 @@ def main():
         print("Continuous logging stopped.")
 
     def on_zero_clicked(event):
-        # Set current displayed voltages as the new offset
         offset[0] = voltages.copy()
         print(f"Offset set to: {offset[0]} (data will be zeroed to this)")
+
+    def on_filter_clicked(event):
+        is_filtering[0] = not is_filtering[0]
+        state = "ON" if is_filtering[0] else "OFF"
+        print(f"Filtering toggled {state}")
 
     start_button.on_clicked(on_start_clicked)
     stop_button.on_clicked(on_stop_clicked)
     zero_button.on_clicked(on_zero_clicked)
+    filter_button.on_clicked(on_filter_clicked)
 
     LOG_INTERVAL = 0.1  # seconds between file logs when running
     last_log_time = time.time()
@@ -166,11 +182,17 @@ def main():
                 ads1256_set_diff_channel(spi, ainp, ainm)
                 wait_drdy()
                 raw = ads1256_read_data(spi)
-                voltage = raw_to_voltage(raw)
-                # Subtract offset for zeroing
-                voltage -= offset[0][i]
-                voltages.append(voltage)
-                ys[i].append(voltage)
+                voltage = raw_to_voltage(raw) - offset[0][i]
+                buffers[i].append(voltage)
+                # Apply filtering if enabled
+                if is_filtering[0]:
+                    filtered_voltage = sum(buffers[i]) / len(buffers[i])
+                else:
+                    filtered_voltage = voltage
+                # Reduce to 6 decimals for display
+                filtered_voltage = round(filtered_voltage, 6)
+                voltages.append(filtered_voltage)
+                ys[i].append(filtered_voltage)
                 ys[i].pop(0)
                 lines[i].set_data(xs, ys[i])
             ax.relim()

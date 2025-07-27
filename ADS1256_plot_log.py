@@ -33,6 +33,14 @@ LOG_FILENAME_PREFIX = "ads1256_diff_log_"
 # Filtering parameters
 FILTER_WINDOW = 5  # Number of samples for moving average
 
+def voltage_to_force(voltage):
+    # 5 V corresponds to 120 kN
+    return (voltage / 5.0) * 120.0
+
+def voltage_to_torque(voltage):
+    # 5 V corresponds to 100 Nm
+    return (voltage / 5.0) * 100.0
+
 def wait_drdy():
     while GPIO.input(DRDY):
         time.sleep(0.0001)
@@ -87,16 +95,21 @@ def ads1256_init(spi):
 def prepare_logfile_header(log_filename):
     with open(log_filename, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp"] + [f"AIN{p}-AIN{n} (V)" for p, n in DIFF_CHANNELS])
+        writer.writerow([
+            "timestamp",
+            "Force (kN)",    # AIN0-AIN1
+            "Torque (Nm)",   # AIN2-AIN3
+            "AIN4-AIN5 (V)",
+            "AIN6-AIN7 (V)"
+        ])
 
-def log_data_to_file(log_filename, voltage_list):
+def log_data_to_file(log_filename, value_list):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Reduce to 6 decimal digits
-    voltage_strs = [f"{v:.6f}" for v in voltage_list]
+    value_strs = [f"{v:.6f}" for v in value_list]
     with open(log_filename, "a", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([now] + voltage_strs)
-    print(f"Logged at {now}: {voltage_strs} to {log_filename}")
+        writer.writerow([now] + value_strs)
+    print(f"Logged at {now}: {value_strs} to {log_filename}")
 
 def main():
     GPIO.setmode(GPIO.BCM)
@@ -118,12 +131,14 @@ def main():
     plt.ion()
     fig, ax = plt.subplots()
     plt.subplots_adjust(bottom=0.36)
-    lines = [ax.plot([], [], label=f"AIN{p}-AIN{n}")[0] for p, n in DIFF_CHANNELS]
+    ch_labels = ["Force (kN)", "Torque (Nm)", "AIN4-AIN5 (V)", "AIN6-AIN7 (V)"]
+    lines = [ax.plot([], [], label=ch_labels[i])[0] for i in range(NUM_CH)]
     ax.legend()
-    ax.set_ylim(-VREF, VREF)
+    # Set Y-limits based on expected ranges
+    ax.set_ylim(-10, 130)  # For force and torque, adjust if needed
     ax.set_xlim(0, 100)
     ax.set_xlabel("Sample")
-    ax.set_ylabel("Voltage (V)")
+    ax.set_ylabel("Force (kN) / Torque (Nm) / Voltage (V)")
 
     xs = list(range(100))
     ys = [[0]*100 for _ in range(NUM_CH)]
@@ -178,6 +193,7 @@ def main():
     try:
         while True:
             voltages.clear()
+            physical_values = []
             for i, (ainp, ainm) in enumerate(DIFF_CHANNELS):
                 ads1256_set_diff_channel(spi, ainp, ainm)
                 wait_drdy()
@@ -189,10 +205,18 @@ def main():
                     filtered_voltage = sum(buffers[i]) / len(buffers[i])
                 else:
                     filtered_voltage = voltage
-                # Reduce to 6 decimals for display
                 filtered_voltage = round(filtered_voltage, 6)
                 voltages.append(filtered_voltage)
-                ys[i].append(filtered_voltage)
+                # Convert for plotting and logging
+                if i == 0:
+                    value = voltage_to_force(filtered_voltage)
+                elif i == 1:
+                    value = voltage_to_torque(filtered_voltage)
+                else:
+                    value = filtered_voltage
+                value = round(value, 6)
+                physical_values.append(value)
+                ys[i].append(value)
                 ys[i].pop(0)
                 lines[i].set_data(xs, ys[i])
             ax.relim()
@@ -202,7 +226,7 @@ def main():
             if is_logging[0] and log_filename[0] is not None:
                 now = time.time()
                 if now - last_log_time > LOG_INTERVAL:
-                    log_data_to_file(log_filename[0], voltages)
+                    log_data_to_file(log_filename[0], physical_values)
                     last_log_time = now
             else:
                 last_log_time = time.time()  # Reset timer so logging resumes cleanly

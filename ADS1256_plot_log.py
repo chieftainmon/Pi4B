@@ -25,13 +25,12 @@ CMD_SELFCAL = 0xF0
 VREF = 5  # Volts (check your board!)
 GAIN = 1    # Set in ADCON register
 
-# Full set of differential channels for ADS1256
+# Differential channels for ADS1256
 DIFF_CHANNELS = [(0, 1), (2, 3), (4, 5), (6, 7)]
 NUM_CH = len(DIFF_CHANNELS)
 LOG_FILENAME_PREFIX = "ads1256_diff_log_"
 
-# Filtering parameters
-FILTER_WINDOW = 5  # Number of samples for moving average
+FILTER_WINDOW = 5  # Moving average window
 
 def voltage_to_force(voltage):
     # 5 V corresponds to 120 kN
@@ -105,7 +104,6 @@ def log_data_to_file(log_filename, value_list):
     print(f"Logged at {now}: {value_strs} to {log_filename}")
 
 def main():
-    # GPIO & SPI setup
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(DRDY, GPIO.IN)
     GPIO.setup(RESET, GPIO.OUT)
@@ -122,7 +120,7 @@ def main():
 
     ads1256_init(spi)
 
-    # Plot setup: two y-axes, only Force and Torque
+    # --- Plotting setup ---
     plt.ion()
     fig, ax1 = plt.subplots()
     plt.subplots_adjust(bottom=0.36)
@@ -130,23 +128,29 @@ def main():
     xs = list(range(100))
     ys_force = [0]*100
     ys_torque = [0]*100
+    ys_ain45 = [0]*100
+    ys_ain67 = [0]*100
 
-    # Force on left y-axis
+    # Plot Force and Torque on left y-axis
     line_force, = ax1.plot(xs, ys_force, 'b-', label="Force (kN)")
+    line_torque, = ax1.plot(xs, ys_torque, 'g-', label="Torque (Nm)")
     ax1.set_xlabel("Sample")
-    ax1.set_ylabel("Force (kN)", color="b")
-    ax1.set_ylim(-10, 130)  # Adjust limits as needed
-    ax1.tick_params(axis='y', labelcolor='b')
+    ax1.set_ylabel("Force (kN) / Torque (Nm)", color="k")
+    ax1.set_ylim(-10, 130)
+    ax1.tick_params(axis='y', labelcolor='k')
 
-    # Torque on right y-axis
+    # Plot AIN4-AIN5 and AIN6-AIN7 on right y-axis
     ax2 = ax1.twinx()
-    line_torque, = ax2.plot(xs, ys_torque, 'r-', label="Torque (Nm)")
-    ax2.set_ylabel("Torque (Nm)", color="r")
-    ax2.set_ylim(-10, 130)  # Adjust limits as needed
-    ax2.tick_params(axis='y', labelcolor='r')
+    line_ain45, = ax2.plot(xs, ys_ain45, 'r-', label="AIN4-AIN5 (V)")
+    line_ain67, = ax2.plot(xs, ys_ain67, 'm-', label="AIN6-AIN7 (V)")
+    ax2.set_ylabel("Voltage (V)", color='k')
+    ax2.set_ylim(-5, 5)
+    ax2.tick_params(axis='y', labelcolor='k')
 
-    # Combine legend for both
-    fig.legend([line_force, line_torque], ["Force (kN)", "Torque (Nm)"], loc='upper right')
+    # Combined legend
+    lines = [line_force, line_torque, line_ain45, line_ain67]
+    labels = [l.get_label() for l in lines]
+    fig.legend(lines, labels, loc='upper right')
 
     # Filtering buffer and state
     buffers = [deque([0.0]*FILTER_WINDOW, maxlen=FILTER_WINDOW) for _ in range(NUM_CH)]
@@ -182,7 +186,6 @@ def main():
         print("Zeroing offset. Please make sure sensors are unloaded.")
         for i in range(NUM_CH):
             offset[0][i] = 0.0
-        # Read a few samples for offset averaging
         for n in range(10):
             for i, (ainp, ainm) in enumerate(DIFF_CHANNELS):
                 ads1256_set_diff_channel(spi, ainp, ainm)
@@ -201,7 +204,7 @@ def main():
     zero_button.on_clicked(on_zero)
     filter_button.on_clicked(on_filter_toggle)
 
-    # Main acquisition & plotting loop
+    # --- Data acquisition, plotting, logging loop ---
     last_log_time = time.time()
     LOG_INTERVAL = 0.2  # seconds
 
@@ -211,6 +214,8 @@ def main():
             physical_values = []
             value_force = None
             value_torque = None
+            value_ain45 = None
+            value_ain67 = None
             for i, (ainp, ainm) in enumerate(DIFF_CHANNELS):
                 ads1256_set_diff_channel(spi, ainp, ainm)
                 wait_drdy()
@@ -224,25 +229,36 @@ def main():
                     filtered_voltage = voltage
                 filtered_voltage = round(filtered_voltage, 6)
                 voltages.append(filtered_voltage)
-                # Convert for plotting and logging
+                # Prepare for plotting and logging
                 if i == 0:
                     value = voltage_to_force(filtered_voltage)
                     value_force = value
                 elif i == 1:
                     value = voltage_to_torque(filtered_voltage)
                     value_torque = value
-                else:
+                elif i == 2:
                     value = filtered_voltage
+                    value_ain45 = value
+                elif i == 3:
+                    value = filtered_voltage
+                    value_ain67 = value
                 value = round(value, 6)
                 physical_values.append(value)
 
-            # Update plotting buffers only for Force and Torque
+            # Update plotting buffers
             ys_force.append(value_force)
             ys_force.pop(0)
             ys_torque.append(value_torque)
             ys_torque.pop(0)
+            ys_ain45.append(value_ain45)
+            ys_ain45.pop(0)
+            ys_ain67.append(value_ain67)
+            ys_ain67.pop(0)
+
             line_force.set_data(xs, ys_force)
             line_torque.set_data(xs, ys_torque)
+            line_ain45.set_data(xs, ys_ain45)
+            line_ain67.set_data(xs, ys_ain67)
             ax1.set_xlim(0, 100)
             ax2.set_xlim(0, 100)
             ax1.relim()
@@ -258,7 +274,7 @@ def main():
                     log_data_to_file(log_filename[0], physical_values)
                     last_log_time = now
             else:
-                last_log_time = time.time()  # reset so logging resumes cleanly
+                last_log_time = time.time()
     except KeyboardInterrupt:
         print("Exiting.")
     finally:

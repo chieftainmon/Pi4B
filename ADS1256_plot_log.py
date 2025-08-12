@@ -25,8 +25,8 @@ CMD_SELFCAL = 0xF0
 VREF = 5  # Volts (check your board!)
 GAIN = 1    # Set in ADCON register
 
-# Differential channels for ADS1256
-DIFF_CHANNELS = [(0, 1), (2, 3), (4, 5), (6, 7)]
+# Differential channels for ADS1256 -- Only use the first two (Force and Torque)
+DIFF_CHANNELS = [(0, 1), (2, 3)]
 NUM_CH = len(DIFF_CHANNELS)
 LOG_FILENAME_PREFIX = "ads1256_diff_log_"
 
@@ -90,9 +90,7 @@ def prepare_logfile_header(log_filename):
         writer.writerow([
             "timestamp",
             "Force (kN)",    # AIN0-AIN1
-            "Torque (Nm)",   # AIN2-AIN3
-            "AIN4-AIN5 (V)",
-            "AIN6-AIN7 (V)"
+            "Torque (Nm)"    # AIN2-AIN3
         ])
 
 def log_data_to_file(log_filename, value_list):
@@ -128,27 +126,23 @@ def main():
     xs = list(range(100))
     ys_force = [0]*100
     ys_torque = [0]*100
-    ys_ain45 = [0]*100
-    ys_ain67 = [0]*100
 
-    # Plot Force and Torque on left y-axis
+    # Plot Force on left y-axis
     line_force, = ax1.plot(xs, ys_force, 'b-', label="Force (kN)")
-    line_torque, = ax1.plot(xs, ys_torque, 'g-', label="Torque (Nm)")
     ax1.set_xlabel("Sample")
-    ax1.set_ylabel("Force (kN) / Torque (Nm)", color="k")
-    ax1.set_ylim(-10, 130)
-    ax1.tick_params(axis='y', labelcolor='k')
+    ax1.set_ylabel("Force (kN)", color="b")
+    ax1.set_ylim(-5, 30)
+    ax1.tick_params(axis='y', labelcolor='b')
 
-    # Plot AIN4-AIN5 and AIN6-AIN7 on right y-axis
+    # Plot Torque on right y-axis
     ax2 = ax1.twinx()
-    line_ain45, = ax2.plot(xs, ys_ain45, 'r-', label="AIN4-AIN5 (V)")
-    line_ain67, = ax2.plot(xs, ys_ain67, 'm-', label="AIN6-AIN7 (V)")
-    ax2.set_ylabel("Voltage (V)", color='k')
-    ax2.set_ylim(-5, 5)
-    ax2.tick_params(axis='y', labelcolor='k')
+    line_torque, = ax2.plot(xs, ys_torque, 'g-', label="Torque (Nm)")
+    ax2.set_ylabel("Torque (Nm)", color='g')
+    ax2.set_ylim(-5, 30)
+    ax2.tick_params(axis='y', labelcolor='g')
 
     # Combined legend
-    lines = [line_force, line_torque, line_ain45, line_ain67]
+    lines = [line_force, line_torque]
     labels = [l.get_label() for l in lines]
     fig.legend(lines, labels, loc='upper right')
 
@@ -214,8 +208,6 @@ def main():
             physical_values = []
             value_force = None
             value_torque = None
-            value_ain45 = None
-            value_ain67 = None
             for i, (ainp, ainm) in enumerate(DIFF_CHANNELS):
                 ads1256_set_diff_channel(spi, ainp, ainm)
                 wait_drdy()
@@ -236,12 +228,6 @@ def main():
                 elif i == 1:
                     value = voltage_to_torque(filtered_voltage)
                     value_torque = value
-                elif i == 2:
-                    value = filtered_voltage
-                    value_ain45 = value
-                elif i == 3:
-                    value = filtered_voltage
-                    value_ain67 = value
                 value = round(value, 6)
                 physical_values.append(value)
 
@@ -250,15 +236,9 @@ def main():
             ys_force.pop(0)
             ys_torque.append(value_torque)
             ys_torque.pop(0)
-            ys_ain45.append(value_ain45)
-            ys_ain45.pop(0)
-            ys_ain67.append(value_ain67)
-            ys_ain67.pop(0)
 
             line_force.set_data(xs, ys_force)
             line_torque.set_data(xs, ys_torque)
-            line_ain45.set_data(xs, ys_ain45)
-            line_ain67.set_data(xs, ys_ain67)
             ax1.set_xlim(0, 100)
             ax2.set_xlim(0, 100)
             ax1.relim()
@@ -267,7 +247,7 @@ def main():
             ax2.autoscale_view(True, True, True)
             plt.pause(0.01)
 
-            # Logging (all 4 channels)
+            # Logging (only force and torque)
             if is_logging[0] and log_filename[0] is not None:
                 now = time.time()
                 if now - last_log_time > LOG_INTERVAL:
